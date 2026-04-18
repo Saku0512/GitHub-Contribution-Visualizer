@@ -1,6 +1,4 @@
 <script>
-	import { onMount } from 'svelte';
-
 	const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
 
 	const statLabels = {
@@ -16,37 +14,11 @@
 	let loading = false;
 	let error = '';
 	let result = null;
-	let health = null;
-	let healthLoading = true;
 	let avatarSpec = null;
 	let avatarPreviewModulePromise = null;
 
-	onMount(() => {
-		loadHealth();
-	});
-
 	$: avatarSpec = result ? buildAvatarSpec(result) : null;
 	$: avatarPreviewModulePromise = result ? import('./lib/AvatarPreview.svelte') : null;
-
-	async function loadHealth() {
-		healthLoading = true;
-
-		try {
-			const response = await fetch(`${apiBaseUrl}/api/health`);
-			if (!response.ok) {
-				throw new Error('health check failed');
-			}
-
-			health = await response.json();
-		} catch {
-			health = {
-				status: 'down',
-				githubTokenConfigured: false
-			};
-		} finally {
-			healthLoading = false;
-		}
-	}
 
 	async function analyze() {
 		error = '';
@@ -265,28 +237,6 @@
 				主なアクティビティ種別までまとめて可視化します。
 			</p>
 		</div>
-
-		<div class="status-panel">
-			<p class="eyebrow">バックエンド状態</p>
-			{#if healthLoading}
-				<p class="status-line">API 状態を確認しています...</p>
-			{:else}
-				<div class="status-list">
-					<div class="status-item">
-						<span>API</span>
-						<strong class:ok={health?.status === 'ok'} class:bad={health?.status !== 'ok'}>
-							{health?.status === 'ok' ? '稼働中' : '停止中'}
-						</strong>
-					</div>
-					<div class="status-item">
-						<span>GitHubトークン</span>
-						<strong class:ok={health?.githubTokenConfigured} class:bad={!health?.githubTokenConfigured}>
-							{health?.githubTokenConfigured ? '設定済み' : '未設定'}
-						</strong>
-					</div>
-				</div>
-			{/if}
-		</div>
 	</section>
 
 	<section class="panel form-panel">
@@ -295,7 +245,6 @@
 				<p class="eyebrow">分析入力</p>
 				<h2>GitHubユーザー名</h2>
 			</div>
-			<p class="form-note">`GITHUB_TOKEN` が設定されていると、実データ分析を返します。</p>
 		</div>
 
 		<div class="input-row">
