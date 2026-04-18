@@ -54,6 +54,8 @@ docker compose up --build
 `80` 番を使いたい場合は、ルートに `.env` を置いて `TRAEFIK_PORT=80` を指定できます。
 実データ分析を使うには `.env` に `GITHUB_TOKEN=...` を設定してください。
 
+`frontend` は `Vite dev server` として起動するので、`frontend/src` 以下を保存するとホットリロードされます。
+
 - `/` は Svelte フロントエンドへルーティング
 - `/api` は Go バックエンドへルーティング
 
