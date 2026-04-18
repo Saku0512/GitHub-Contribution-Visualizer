@@ -55,6 +55,7 @@ docker compose up --build
 実データ分析を使うには `.env` に `GITHUB_TOKEN=...` を設定してください。
 
 `frontend` は `Vite dev server` として起動するので、`frontend/src` 以下を保存するとホットリロードされます。
+依存を追加した場合も、`frontend` 起動時にコンテナ内で `npm install` が走るため、そのまま反映されます。
 
 - `/` は Svelte フロントエンドへルーティング
 - `/api` は Go バックエンドへルーティング

@@ -18,10 +18,15 @@
 	let result = null;
 	let health = null;
 	let healthLoading = true;
+	let avatarSpec = null;
+	let avatarPreviewModulePromise = null;
 
 	onMount(() => {
 		loadHealth();
 	});
+
+	$: avatarSpec = result ? buildAvatarSpec(result) : null;
+	$: avatarPreviewModulePromise = result ? import('./lib/AvatarPreview.svelte') : null;
 
 	async function loadHealth() {
 		healthLoading = true;
@@ -131,6 +136,114 @@
 				value: formatPercent(stats.weekendRatio)
 			}
 		];
+	}
+
+	function buildAvatarSpec(data) {
+		const paletteByActivity = {
+			commits: {
+				primary: '#0f766e',
+				secondary: '#f4bd78',
+				accent: '#125b8a'
+			},
+			pull_requests: {
+				primary: '#c77831',
+				secondary: '#ffe1b6',
+				accent: '#0f766e'
+			},
+			issues: {
+				primary: '#7c5c3f',
+				secondary: '#e7d2b9',
+				accent: '#7a2e4d'
+			},
+			reviews: {
+				primary: '#375a7f',
+				secondary: '#dce7f5',
+				accent: '#0f766e'
+			}
+		};
+
+		const palette = paletteByActivity[data.stats.dominantActivity] ?? paletteByActivity.commits;
+		const total = data.stats.totalContributions;
+		const activeDays = data.stats.activeDays;
+		const streak = data.stats.longestStreak;
+		const peak = data.stats.peakDayContributions;
+		const weekendBias = data.stats.weekendRatio;
+		const repoCount = data.topRepositories.length;
+
+		return {
+			palette,
+			torsoHeight: clamp(1.6 + activeDays / 260, 1.7, 2.45),
+			torsoRadius: clamp(0.5 + total / 900, 0.54, 0.9),
+			headRadius: clamp(0.72 + peak / 40, 0.75, 1.1),
+			limbRadius: clamp(0.11 + data.stats.pullRequestCount / 250, 0.12, 0.22),
+			limbLength: clamp(0.95 + total / 1000, 1.02, 1.45),
+			legRadius: clamp(0.14 + data.stats.commitCount / 420, 0.15, 0.24),
+			legLength: clamp(1.25 + activeDays / 300, 1.25, 1.75),
+			finCount: clamp(2 + Math.floor(total / 180), 2, 7),
+			finHeight: clamp(0.7 + peak / 18, 0.75, 1.35),
+			antennaCount: clamp(1 + Math.floor(streak / 18), 1, 4),
+			antennaHeight: clamp(0.55 + streak / 80, 0.6, 1.1),
+			satelliteCount: clamp(repoCount, 1, 5),
+			badgeCount: clamp(
+				Math.max(data.stats.pullRequestCount, data.stats.reviewCount, data.stats.issueCount) > 0
+					? 1 + Math.floor((data.stats.pullRequestCount + data.stats.reviewCount) / 18)
+					: 1,
+				1,
+				4
+			),
+			weekendBias
+		};
+	}
+
+	function getAvatarParameters(spec, stats) {
+		return [
+			{
+				part: '胴体',
+				value: `${spec.torsoHeight.toFixed(2)}`,
+				source: `活動日数 ${formatNumber(stats.activeDays)}日`,
+				meaning: '年間を通した継続力'
+			},
+			{
+				part: '頭部',
+				value: `${spec.headRadius.toFixed(2)}`,
+				source: `最多活動日 ${formatNumber(stats.peakDayContributions)}`,
+				meaning: '1日に集中して出せる瞬発力'
+			},
+			{
+				part: '背面フィン',
+				value: `${spec.finCount}枚`,
+				source: `総コントリビューション ${formatNumber(stats.totalContributions)}`,
+				meaning: '積み上げたアウトプット量'
+			},
+			{
+				part: 'アンテナ',
+				value: `${spec.antennaCount}本`,
+				source: `最長連続日数 ${formatNumber(stats.longestStreak)}日`,
+				meaning: '連続して走り続ける持久力'
+			},
+			{
+				part: 'サテライト',
+				value: `${spec.satelliteCount}個`,
+				source: `主要リポジトリ ${stats.topRepositoryCount}件`,
+				meaning: '活動の広がりと探索範囲'
+			},
+			{
+				part: '配色',
+				value: formatActivityLabel(stats.dominantActivity),
+				source: `主要活動 ${formatActivityLabel(stats.dominantActivity)}`,
+				meaning: 'どの行動がいちばん強く出ているか'
+			},
+			{
+				part: '胸バッジ',
+				value: `${spec.badgeCount}個`,
+				source: `PR+レビュー ${formatNumber(stats.pullRequestCount + stats.reviewCount)}`,
+				meaning: '共同開発への関与度'
+			}
+		];
+	}
+
+	function clamp(value, min, max) {
+		return Math.min(Math.max(value, min), max);
 	}
 </script>
 
@@ -255,6 +368,42 @@
 					<h3>{stat.value}</h3>
 				</article>
 			{/each}
+		</section>
+
+		<section class="result-card model-section">
+			<div class="model-copy">
+				<p class="eyebrow">コード生成3Dモデル</p>
+				<h2>分析結果から組み上がるアバター</h2>
+				<p class="body-copy">
+					このモデルは AI 画像生成ではなく、活動量・streak・主要活動・リポジトリ数から形状と色を
+					決めてコードで組み立てています。
+				</p>
+
+				<div class="model-parameters">
+					{#each getAvatarParameters(avatarSpec, { ...result.stats, topRepositoryCount: result.topRepositories.length }) as parameter}
+						<div class="model-parameter-card">
+							<div class="model-parameter-head">
+								<strong>{parameter.part}</strong>
+								<span>{parameter.value}</span>
+							</div>
+							<p>{parameter.meaning}</p>
+							<small>{parameter.source}</small>
+						</div>
+					{/each}
+				</div>
+			</div>
+
+			<div class="model-stage">
+				{#if avatarPreviewModulePromise}
+					{#await avatarPreviewModulePromise}
+						<div class="model-loading">3Dプレビューを準備しています...</div>
+					{:then module}
+						<svelte:component this={module.default} spec={avatarSpec} />
+					{:catch}
+						<div class="model-loading">3Dプレビューの読み込みに失敗しました。</div>
+					{/await}
+				{/if}
+			</div>
 		</section>
 
 		<section class="detail-grid">
