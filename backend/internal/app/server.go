@@ -1,24 +1,40 @@
 package app
 
 import (
+	"context"
 	"encoding/json"
+	"errors"
 	"log"
 	"net/http"
 	"os"
 	"time"
 
 	"github.com/saku0512/GitHub-Contribution-Visualizer/backend/internal/analysis"
+	"github.com/saku0512/GitHub-Contribution-Visualizer/backend/internal/githubapi"
 )
 
 type Server struct {
-	Addr string
-	mux  *http.ServeMux
+	Addr                  string
+	mux                   *http.ServeMux
+	analyzer              analyzer
+	gitHubTokenConfigured bool
+}
+
+type analyzer interface {
+	AnalyzeUser(ctx context.Context, username string) (analysis.Result, error)
 }
 
 func NewServer() *http.Server {
+	githubClient := githubapi.NewClient(
+		os.Getenv("GITHUB_TOKEN"),
+		envOrDefault("GITHUB_GRAPHQL_URL", ""),
+	)
+
 	server := &Server{
-		Addr: envOrDefault("PORT", "8080"),
-		mux:  http.NewServeMux(),
+		Addr:                  envOrDefault("PORT", "8080"),
+		mux:                   http.NewServeMux(),
+		analyzer:              analysis.NewService(githubClient, time.Now),
+		gitHubTokenConfigured: githubClient.HasToken(),
 	}
 
 	server.routes()
@@ -43,8 +59,9 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	writeJSON(w, http.StatusOK, map[string]string{
-		"status": "ok",
+	writeJSON(w, http.StatusOK, map[string]any{
+		"status":                "ok",
+		"githubTokenConfigured": s.gitHubTokenConfigured,
 	})
 }
 
@@ -72,8 +89,37 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
-	result := analysis.AnalyzeUser(req.Username)
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	result, err := s.analyzer.AnalyzeUser(ctx, req.Username)
+	if err != nil {
+		s.writeAnalyzeError(w, err)
+		return
+	}
+
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) writeAnalyzeError(w http.ResponseWriter, err error) {
+	switch {
+	case errors.Is(err, analysis.ErrInvalidUsername):
+		writeJSON(w, http.StatusBadRequest, map[string]string{
+			"error": "invalid GitHub username",
+		})
+	case errors.Is(err, analysis.ErrUserNotFound):
+		writeJSON(w, http.StatusNotFound, map[string]string{
+			"error": "GitHub user not found",
+		})
+	case errors.Is(err, analysis.ErrGitHubTokenMissing):
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "GITHUB_TOKEN is not configured",
+		})
+	default:
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": "failed to fetch GitHub activity",
+		})
+	}
 }
 
 func writeMethodNotAllowed(w http.ResponseWriter) {
