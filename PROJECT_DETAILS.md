@@ -12,13 +12,13 @@
 flowchart LR
     UB[User Browser] -- "1. Username" --> API[Go API Server]
 
-    API -- "2. GraphQL Query" --> GH[:contentReference[oaicite:0]{index=0} API]
-    API --> AE[Analysis Engine]
+    API -- "2. GraphQL Query" --> GH[GitHub API]
+    API -- "3. Analysis" --> AE[Analysis Engine]
 
     AE -- "4. JSON Result" --> UB
 
-    UB -- "5. Parameters" --> TJ[:contentReference[oaicite:1]{index=1} Engine]
-    TJ --> AV[Render 3D Avatar]
+    UB -- "5. Parameters" --> THREE[Three.js Engine]
+    THREE --> AV[Render 3D Avatar]
 ```
 
 1.  **収集**: `githubapi` クライアントが GitHub GraphQL API v4 を使用し、ユーザーのプロファイル、コントリビューションカレンダー、およびリポジトリごとの統計を1回のリクエストで取得。
