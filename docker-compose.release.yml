@@ -26,8 +26,13 @@ services:
     labels:
       - "traefik.enable=true"
       - "traefik.docker.network=proxy"
+      - "traefik.http.routers.commit-visualizer-web.rule=Host(`commit-visualizer.saku0512.com`)"
+      - "traefik.http.routers.commit-visualizer-web.entrypoints=web"
+      - "traefik.http.routers.commit-visualizer-web.middlewares=commit-visualizer-redirect"
+      - "traefik.http.middlewares.commit-visualizer-redirect.redirectscheme.scheme=https"
       - "traefik.http.routers.commit-visualizer.rule=Host(`commit-visualizer.saku0512.com`)"
       - "traefik.http.routers.commit-visualizer.entrypoints=websecure"
+      - "traefik.http.routers.commit-visualizer.tls=true"
       - "traefik.http.routers.commit-visualizer.tls.certresolver=myresolver"
       - "traefik.http.routers.commit-visualizer.priority=1"
       - "traefik.http.services.commit-visualizer.loadbalancer.server.port=80"
