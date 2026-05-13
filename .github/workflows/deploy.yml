@@ -24,13 +24,15 @@ jobs:
 
       - name: Create release archive
         run: |
+          rm -f release.tar.gz
           tar \
             --exclude='.git' \
             --exclude='.github' \
             --exclude='.env' \
             --exclude='frontend/node_modules' \
             --exclude='frontend/dist' \
-            -czf release.tar.gz .
+            -czf "${RUNNER_TEMP}/release.tar.gz" .
+          cp "${RUNNER_TEMP}/release.tar.gz" release.tar.gz
 
       - name: Prepare deploy directory
         uses: appleboy/ssh-action@v1.2.0
