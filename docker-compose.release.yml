@@ -1,0 +1,44 @@
+services:
+  backend:
+    build:
+      context: ./backend
+    container_name: commit-visualizer-backend
+    restart: always
+    environment:
+      - PORT=8080
+      - GITHUB_TOKEN=${GITHUB_TOKEN:?Set GITHUB_TOKEN}
+      - GITHUB_GRAPHQL_URL=${GITHUB_GRAPHQL_URL:-}
+    expose:
+      - "8080"
+    networks:
+      - internal
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    container_name: commit-visualizer-frontend
+    restart: always
+    depends_on:
+      - backend
+    expose:
+      - "80"
+    labels:
+      - "traefik.enable=true"
+      - "traefik.docker.network=proxy"
+      - "traefik.http.routers.commit-visualizer.rule=Host(`commit-visualizer.saku0512.com`)"
+      - "traefik.http.routers.commit-visualizer.entrypoints=websecure"
+      - "traefik.http.routers.commit-visualizer.tls.certresolver=myresolver"
+      - "traefik.http.routers.commit-visualizer.priority=1"
+      - "traefik.http.services.commit-visualizer.loadbalancer.server.port=80"
+      - "traefik.http.middlewares.commit-visualizer-headers.headers.customrequestheaders.X-Forwarded-Proto=https"
+      - "traefik.http.routers.commit-visualizer.middlewares=commit-visualizer-headers"
+    networks:
+      - proxy
+      - internal
+
+networks:
+  proxy:
+    external: true
+  internal:
+    internal: true

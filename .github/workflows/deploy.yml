@@ -1,0 +1,77 @@
+name: Deploy
+
+on:
+  push:
+    branches:
+      - main
+  workflow_dispatch:
+
+concurrency:
+  group: deploy-production
+  cancel-in-progress: true
+
+env:
+  DEPLOY_PATH: ${{ secrets.DEPLOY_PATH || '/opt/commit-visualizer' }}
+
+jobs:
+  deploy:
+    name: Upload and restart
+    runs-on: ubuntu-latest
+
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Create release archive
+        run: |
+          tar \
+            --exclude='.git' \
+            --exclude='.github' \
+            --exclude='.env' \
+            --exclude='frontend/node_modules' \
+            --exclude='frontend/dist' \
+            -czf release.tar.gz .
+
+      - name: Prepare deploy directory
+        uses: appleboy/ssh-action@v1.2.0
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          script: |
+            mkdir -p "${{ env.DEPLOY_PATH }}"
+
+      - name: Upload release archive
+        uses: appleboy/scp-action@v0.1.7
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          source: release.tar.gz
+          target: ${{ env.DEPLOY_PATH }}
+
+      - name: Deploy on server
+        uses: appleboy/ssh-action@v1.2.0
+        env:
+          GITHUB_TOKEN: ${{ secrets.APP_GITHUB_TOKEN }}
+          GITHUB_GRAPHQL_URL: ${{ secrets.GITHUB_GRAPHQL_URL }}
+        with:
+          host: ${{ secrets.SSH_HOST }}
+          username: ${{ secrets.SSH_USER }}
+          key: ${{ secrets.SSH_KEY }}
+          port: ${{ secrets.SSH_PORT || 22 }}
+          envs: GITHUB_TOKEN,GITHUB_GRAPHQL_URL
+          script: |
+            set -eu
+            : "${GITHUB_TOKEN:?Set APP_GITHUB_TOKEN secret}"
+            cd "${{ env.DEPLOY_PATH }}"
+            tar -xzf release.tar.gz
+            rm release.tar.gz
+            cat > .env <<EOF
+            GITHUB_TOKEN=${GITHUB_TOKEN}
+            GITHUB_GRAPHQL_URL=${GITHUB_GRAPHQL_URL:-}
+            EOF
+            docker compose -f docker-compose.release.yml up -d --build --remove-orphans
+            docker image prune -f
