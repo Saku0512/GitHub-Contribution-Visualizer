@@ -12,6 +12,7 @@ services:
       - "8080"
     networks:
       - internal
+      - outbound
 
   frontend:
     build:
@@ -47,3 +48,5 @@ networks:
     external: true
   internal:
     internal: true
+  outbound:
+    driver: bridge
