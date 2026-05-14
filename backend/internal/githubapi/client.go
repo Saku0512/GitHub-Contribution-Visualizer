@@ -9,6 +9,7 @@ import (
 	"io"
 	"net/http"
 	"sort"
+	"strings"
 	"time"
 
 	"github.com/saku0512/GitHub-Contribution-Visualizer/backend/internal/analysis"
@@ -85,7 +86,7 @@ func (c *Client) FetchUserActivity(ctx context.Context, username string, from, t
 	}
 
 	if resp.StatusCode >= http.StatusBadRequest {
-		return analysis.Snapshot{}, fmt.Errorf("%w: github responded with %s", analysis.ErrUpstreamUnavailable, resp.Status)
+		return analysis.Snapshot{}, fmt.Errorf("%w: %s", analysis.ErrUpstreamUnavailable, describeHTTPError(resp.StatusCode, bodyBytes))
 	}
 
 	var graphResp graphQLResponse
@@ -165,6 +166,28 @@ func hasNotFoundError(errors []graphQLError) bool {
 	}
 
 	return false
+}
+
+func describeHTTPError(statusCode int, body []byte) string {
+	bodyText := strings.TrimSpace(string(body))
+
+	switch statusCode {
+	case http.StatusUnauthorized:
+		return "GitHub API returned 401 Unauthorized; check GITHUB_TOKEN"
+	case http.StatusForbidden:
+		if strings.Contains(strings.ToLower(bodyText), "rate limit") {
+			return "GitHub API rate limit exceeded"
+		}
+		return "GitHub API returned 403 Forbidden; token may lack required access"
+	default:
+		if bodyText == "" {
+			return fmt.Sprintf("GitHub API returned %d", statusCode)
+		}
+		if len(bodyText) > 180 {
+			bodyText = bodyText[:180] + "..."
+		}
+		return fmt.Sprintf("GitHub API returned %d: %s", statusCode, bodyText)
+	}
 }
 
 func toSnapshot(user graphUser) (analysis.Snapshot, error) {

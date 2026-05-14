@@ -111,3 +111,24 @@ func TestFetchUserActivityWithoutToken(t *testing.T) {
 		t.Fatalf("expected ErrGitHubTokenMissing, got %v", err)
 	}
 }
+
+func TestFetchUserActivityReturnsHelpfulUnauthorizedError(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		http.Error(w, `{"message":"Bad credentials"}`, http.StatusUnauthorized)
+	}))
+	defer server.Close()
+
+	client := NewClient("test-token", server.URL)
+	_, err := client.FetchUserActivity(context.Background(), "octocat", time.Now().AddDate(-1, 0, 0), time.Now())
+	if err == nil {
+		t.Fatal("expected unauthorized error")
+	}
+
+	if !errors.Is(err, analysis.ErrUpstreamUnavailable) {
+		t.Fatalf("expected ErrUpstreamUnavailable, got %v", err)
+	}
+
+	if got := err.Error(); got != "github upstream unavailable: GitHub API returned 401 Unauthorized; check GITHUB_TOKEN" {
+		t.Fatalf("unexpected error message: %q", got)
+	}
+}

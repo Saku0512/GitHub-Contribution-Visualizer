@@ -4,9 +4,11 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
+	"strings"
 	"time"
 
 	"github.com/saku0512/GitHub-Contribution-Visualizer/backend/internal/analysis"
@@ -94,6 +96,7 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 
 	result, err := s.analyzer.AnalyzeUser(ctx, req.Username)
 	if err != nil {
+		log.Printf("analyze request failed for %q: %v", req.Username, err)
 		s.writeAnalyzeError(w, err)
 		return
 	}
@@ -115,11 +118,28 @@ func (s *Server) writeAnalyzeError(w http.ResponseWriter, err error) {
 		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
 			"error": "GITHUB_TOKEN is not configured",
 		})
+	case errors.Is(err, analysis.ErrUpstreamUnavailable):
+		writeJSON(w, http.StatusBadGateway, map[string]string{
+			"error": publicUpstreamError(err),
+		})
 	default:
 		writeJSON(w, http.StatusBadGateway, map[string]string{
 			"error": "failed to fetch GitHub activity",
 		})
 	}
+}
+
+func publicUpstreamError(err error) string {
+	message := err.Error()
+	message = strings.TrimPrefix(message, analysis.ErrUpstreamUnavailable.Error())
+	message = strings.TrimPrefix(message, ":")
+	message = strings.TrimSpace(message)
+
+	if message == "" {
+		return "failed to fetch GitHub activity"
+	}
+
+	return fmt.Sprintf("GitHub API request failed: %s", message)
 }
 
 func writeMethodNotAllowed(w http.ResponseWriter) {

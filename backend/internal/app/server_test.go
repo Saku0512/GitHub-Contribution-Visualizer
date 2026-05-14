@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"testing"
@@ -53,11 +54,13 @@ func TestHandleAnalyzeMapsKnownErrors(t *testing.T) {
 		name   string
 		err    error
 		status int
+		want   string
 	}{
-		{name: "invalid username", err: analysis.ErrInvalidUsername, status: http.StatusBadRequest},
-		{name: "not found", err: analysis.ErrUserNotFound, status: http.StatusNotFound},
-		{name: "token missing", err: analysis.ErrGitHubTokenMissing, status: http.StatusServiceUnavailable},
-		{name: "upstream", err: errors.New("boom"), status: http.StatusBadGateway},
+		{name: "invalid username", err: analysis.ErrInvalidUsername, status: http.StatusBadRequest, want: "invalid GitHub username"},
+		{name: "not found", err: analysis.ErrUserNotFound, status: http.StatusNotFound, want: "GitHub user not found"},
+		{name: "token missing", err: analysis.ErrGitHubTokenMissing, status: http.StatusServiceUnavailable, want: "GITHUB_TOKEN is not configured"},
+		{name: "upstream", err: fmt.Errorf("%w: GitHub API returned 401 Unauthorized; check GITHUB_TOKEN", analysis.ErrUpstreamUnavailable), status: http.StatusBadGateway, want: "GitHub API request failed: GitHub API returned 401 Unauthorized; check GITHUB_TOKEN"},
+		{name: "unknown", err: errors.New("boom"), status: http.StatusBadGateway, want: "failed to fetch GitHub activity"},
 	}
 
 	for _, tt := range tests {
@@ -76,6 +79,15 @@ func TestHandleAnalyzeMapsKnownErrors(t *testing.T) {
 
 			if rec.Code != tt.status {
 				t.Fatalf("expected %d, got %d", tt.status, rec.Code)
+			}
+
+			var payload map[string]string
+			if err := json.Unmarshal(rec.Body.Bytes(), &payload); err != nil {
+				t.Fatalf("failed to decode response: %v", err)
+			}
+
+			if payload["error"] != tt.want {
+				t.Fatalf("expected error %q, got %q", tt.want, payload["error"])
 			}
 		})
 	}
