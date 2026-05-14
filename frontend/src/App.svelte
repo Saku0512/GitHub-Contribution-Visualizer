@@ -2,6 +2,7 @@
 	import { onMount } from 'svelte';
 
 	const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
+	const avatarPreviewModulePromise = import('./lib/AvatarPreview.svelte');
 
 	const statLabels = {
 		totalContributions: '総コントリビューション',
@@ -12,40 +13,56 @@
 		weekendRatio: '週末比率'
 	};
 
+	let route = 'home';
 	let username = '';
 	let loading = false;
 	let authLoading = false;
 	let oauthAvailable = true;
 	let error = '';
-	let result = null;
-	let avatarSpec = null;
-	let avatarPreviewModulePromise = null;
+	let currentUser = null;
+	let showcaseUsers = [];
+	let searchResult = null;
 
-	$: avatarSpec = result ? buildAvatarSpec(result) : null;
-	$: avatarPreviewModulePromise = result ? import('./lib/AvatarPreview.svelte') : null;
+	$: showcaseDisplayUsers = currentUser
+		? showcaseUsers.filter((user) => user.username !== currentUser.username)
+		: showcaseUsers;
 
 	onMount(() => {
-		void loadHealth();
+		updateRoute();
+		window.addEventListener('popstate', updateRoute);
+
+		void initialize();
+
+		return () => {
+			window.removeEventListener('popstate', updateRoute);
+		};
+	});
+
+	async function initialize() {
+		await Promise.all([loadHealth(), loadCurrentUser(), loadShowcase()]);
 
 		const currentURL = new URL(window.location.href);
-		const githubLogin = currentURL.searchParams.get('github_login');
 		const authError = currentURL.searchParams.get('auth_error');
-
-		if (githubLogin) {
-			username = githubLogin;
-			void analyzeForUsername(githubLogin);
-		}
-
 		if (authError) {
 			error = authError;
-		}
-
-		if (githubLogin || authError) {
-			currentURL.searchParams.delete('github_login');
 			currentURL.searchParams.delete('auth_error');
 			window.history.replaceState({}, '', currentURL);
 		}
-	});
+	}
+
+	function updateRoute() {
+		route = window.location.pathname === '/my-page' ? 'my-page' : 'home';
+	}
+
+	function navigateTo(path) {
+		if (window.location.pathname === path) {
+			return;
+		}
+
+		window.history.pushState({}, '', path);
+		updateRoute();
+		error = '';
+	}
 
 	async function loadHealth() {
 		try {
@@ -61,13 +78,45 @@
 		}
 	}
 
-	async function analyze() {
-		return analyzeForUsername(username);
+	async function loadCurrentUser() {
+		try {
+			const response = await fetch(`${apiBaseUrl}/api/v1/me`);
+			if (response.status === 401) {
+				currentUser = null;
+				return;
+			}
+
+			const data = await response.json();
+			if (!response.ok) {
+				throw new Error(data.error ?? 'ログイン情報の取得に失敗しました。');
+			}
+
+			currentUser = data;
+		} catch (err) {
+			currentUser = null;
+			error = err instanceof Error ? err.message : 'ログイン情報の取得に失敗しました。';
+		}
+	}
+
+	async function loadShowcase() {
+		try {
+			const response = await fetch(`${apiBaseUrl}/api/v1/showcase`);
+			const data = await response.json();
+
+			if (!response.ok) {
+				throw new Error(data.error ?? 'ショーケースの取得に失敗しました。');
+			}
+
+			showcaseUsers = data.users ?? [];
+		} catch (err) {
+			showcaseUsers = [];
+			error = err instanceof Error ? err.message : 'ショーケースの取得に失敗しました。';
+		}
 	}
 
 	async function analyzeForUsername(value) {
 		error = '';
-		result = null;
+		searchResult = null;
 
 		const normalized = value.trim();
 		if (!normalized) {
@@ -92,7 +141,7 @@
 				throw new Error(data.error ?? '分析に失敗しました。');
 			}
 
-			result = data;
+			searchResult = data;
 		} catch (err) {
 			error = err instanceof Error ? err.message : '不明なエラーが発生しました。';
 		} finally {
@@ -102,12 +151,38 @@
 
 	function loginWithGitHub() {
 		if (!oauthAvailable) {
-			error = 'GitHubログインはまだ設定されていません。ユーザー名検索はそのまま使えます。';
+			error = 'GitHubログインはまだ設定されていません。';
 			return;
 		}
 
 		authLoading = true;
 		window.location.href = `${apiBaseUrl}/api/v1/auth/github/login`;
+	}
+
+	async function logout() {
+		error = '';
+		authLoading = true;
+
+		try {
+			const response = await fetch(`${apiBaseUrl}/api/v1/logout`, {
+				method: 'POST'
+			});
+			const data = await response.json();
+
+			if (!response.ok) {
+				throw new Error(data.error ?? 'ログアウトに失敗しました。');
+			}
+
+			currentUser = null;
+			if (route === 'my-page') {
+				navigateTo('/');
+			}
+			await loadShowcase();
+		} catch (err) {
+			error = err instanceof Error ? err.message : 'ログアウトに失敗しました。';
+		} finally {
+			authLoading = false;
+		}
 	}
 
 	function formatPercent(value) {
@@ -279,226 +354,354 @@
 	<title>GitHub Contribution Visualizer</title>
 	<meta
 		name="description"
-		content="GitHubの草をもとに、開発スタイルをビジュアル化するプロトタイプ"
+		content="GitHubの草をもとに、ログイン中ユーザーの3Dモデルと自分の活動傾向を可視化する"
 	/>
 </svelte:head>
 
 <main class="shell">
-	<section class="hero">
-		<div class="hero-copy">
-			<p class="eyebrow">Contribution Radar</p>
-			<h1>GitHub の活動ログを<br />ペルソナと傾向に変換する</h1>
-			<p class="lead">
-				GitHub GraphQL API から過去1年の活動を読み取り、streak、週末比率、主要リポジトリ、
-				主なアクティビティ種別までまとめて可視化します。
-			</p>
-		</div>
-	</section>
+	<header class="site-header">
+		<button class="brand" on:click={() => navigateTo('/')}>
+			<span class="brand-mark"></span>
+			<span>
+				<strong>Contribution Radar</strong>
+				<small>GitHub activity avatars</small>
+			</span>
+		</button>
 
-	<section class="panel form-panel">
-		<div class="form-header">
-			<div>
-				<p class="eyebrow">分析入力</p>
-				<h2>GitHubユーザー名</h2>
-			</div>
-			<p class="form-note">
-				ユーザー名で直接検索するか、GitHub でログインして自分のアカウントをすぐ分析できます。
-			</p>
-		</div>
+		<nav class="header-nav">
+			<button class:active={route === 'home'} on:click={() => navigateTo('/')}>トップ</button>
+			<button class:active={route === 'my-page'} on:click={() => navigateTo('/my-page')}>マイページ</button>
+		</nav>
 
-		<div class="oauth-row">
-			<button class="oauth-button" on:click={loginWithGitHub} disabled={loading || authLoading || !oauthAvailable}>
-				{#if authLoading}
-					GitHubへ移動中...
-				{:else}
-					GitHubでログインして分析
-				{/if}
-			</button>
-			<p class="oauth-note">ログイン後は GitHub のユーザー名を自動入力して、そのまま分析を開始します。</p>
-		</div>
-
-		<div class="input-row">
-			<input
-				id="username"
-				bind:value={username}
-				type="text"
-				placeholder="octocat"
-				autocomplete="off"
-				on:keydown={(event) => event.key === 'Enter' && analyzeForUsername(username)}
-			/>
-			<button on:click={() => analyzeForUsername(username)} disabled={loading || authLoading}>
-				{#if loading}
-					分析中...
-				{:else}
-					分析する
-				{/if}
-			</button>
-		</div>
-
-		{#if error}
-			<p class="message error">{error}</p>
-		{/if}
-	</section>
-
-	{#if result}
-		<section class="result-card hero-result">
-			<div class="profile-block">
-				{#if result.profile.avatarUrl}
-					<img class="avatar" src={result.profile.avatarUrl} alt={result.username} />
-				{/if}
-
-				<div class="profile-copy">
-					<p class="eyebrow">Persona</p>
-					<h2>{result.personaTitle}</h2>
-					<p class="summary">{result.summary}</p>
-
-					<div class="profile-meta">
-						<span>@{result.username}</span>
-						{#if result.profile.name}
-							<span>{result.profile.name}</span>
-						{/if}
-						{#if result.profile.url}
-							<a href={result.profile.url} target="_blank" rel="noreferrer">GitHub Profile</a>
-						{/if}
+		<div class="header-actions">
+			{#if currentUser}
+				<div class="header-user">
+					{#if currentUser.profile.avatarUrl}
+						<img class="header-avatar" src={currentUser.profile.avatarUrl} alt={currentUser.username} />
+					{/if}
+					<div>
+						<strong>@{currentUser.username}</strong>
+						<small>{currentUser.personaTitle}</small>
 					</div>
 				</div>
-			</div>
+				<button class="ghost-button" on:click={() => navigateTo('/my-page')}>自分を見る</button>
+				<button class="ghost-button" on:click={logout} disabled={authLoading}>ログアウト</button>
+			{:else}
+				<button class="oauth-button" on:click={loginWithGitHub} disabled={authLoading || !oauthAvailable}>
+					{authLoading ? 'GitHubへ移動中...' : 'GitHubでログイン'}
+				</button>
+			{/if}
+		</div>
+	</header>
 
-			<div class="pill-row">
-				<div class="pill">
-					<span>おすすめアセット</span>
-					<strong>{result.recommendedAsset}</strong>
-				</div>
-				<div class="pill">
-					<span>主要アクティビティ</span>
-					<strong>{formatActivityLabel(result.stats.dominantActivity)}</strong>
-				</div>
-				<div class="pill">
-					<span>分析期間</span>
-					<strong>{result.stats.from} - {result.stats.to}</strong>
-				</div>
-			</div>
+	{#if error}
+		<section class="panel message-panel">
+			<p class="message error">{error}</p>
 		</section>
+	{/if}
 
-		<section class="stats-grid">
-			{#each getPrimaryStats(result.stats) as stat}
-				<article class="stat-card">
-					<p>{stat.label}</p>
-					<h3>{stat.value}</h3>
-				</article>
-			{/each}
-		</section>
-
-		<section class="result-card model-section">
-			<div class="model-copy">
-				<p class="eyebrow">コード生成3Dモデル</p>
-				<h2>分析結果から組み上がるアバター</h2>
-				<p class="body-copy">
-					このモデルは AI 画像生成ではなく、活動量・streak・主要活動・リポジトリ数から形状と色を
-					決めてコードで組み立てています。
+	{#if route === 'home'}
+		<section class="hero home-hero">
+			<div class="hero-copy">
+				<p class="eyebrow">Live Showcase</p>
+				<h1>ログイン中の開発者たちの<br />3Dモデルを見渡す</h1>
+				<p class="lead">
+					トップページでは GitHub ログインしているユーザーの活動アバターを表示します。検索は引き続き残し、
+					任意の GitHub ユーザーも個別に分析できます。
 				</p>
+			</div>
+		</section>
 
-				<div class="model-parameters">
-					{#each getAvatarParameters(avatarSpec, { ...result.stats, topRepositoryCount: result.topRepositories.length }) as parameter}
-						<div class="model-parameter-card">
-							<div class="model-parameter-head">
-								<strong>{parameter.part}</strong>
-								<span>{parameter.value}</span>
-							</div>
-							<p>{parameter.meaning}</p>
-							<small>{parameter.source}</small>
-						</div>
-					{/each}
+		<section class="panel form-panel">
+			<div class="form-header">
+				<div>
+					<p class="eyebrow">ユーザー検索</p>
+					<h2>任意の GitHub ユーザーを分析</h2>
 				</div>
+				<p class="form-note">
+					ログインしなくても検索できます。ログインしていればヘッダーからいつでもマイページに移動できます。
+				</p>
 			</div>
 
-			<div class="model-stage">
-				{#if avatarPreviewModulePromise}
+			<div class="input-row">
+				<input
+					id="username"
+					bind:value={username}
+					type="text"
+					placeholder="octocat"
+					autocomplete="off"
+					on:keydown={(event) => event.key === 'Enter' && analyzeForUsername(username)}
+				/>
+				<button on:click={() => analyzeForUsername(username)} disabled={loading}>
+					{loading ? '分析中...' : '分析する'}
+				</button>
+			</div>
+		</section>
+
+		<section class="result-card showcase-section">
+			<div class="section-header">
+				<div>
+					<p class="eyebrow">Showcase</p>
+					<h2>ログイン中ユーザーのアバター</h2>
+				</div>
+				<p class="form-note">現在ログインしているユーザーの最新分析結果を並べています。</p>
+			</div>
+
+			{#if showcaseDisplayUsers.length > 0}
+				<div class="showcase-grid">
 					{#await avatarPreviewModulePromise}
 						<div class="model-loading">3Dプレビューを準備しています...</div>
 					{:then module}
-						<svelte:component this={module.default} spec={avatarSpec} />
-					{:catch}
-						<div class="model-loading">3Dプレビューの読み込みに失敗しました。</div>
+						{#each showcaseDisplayUsers as user}
+							<article class="showcase-card">
+								<div class="showcase-head">
+									<div class="showcase-identity">
+										{#if user.profile.avatarUrl}
+											<img class="avatar small-avatar" src={user.profile.avatarUrl} alt={user.username} />
+										{/if}
+										<div>
+											<h3>@{user.username}</h3>
+											<p>{user.personaTitle}</p>
+										</div>
+									</div>
+									<span class="showcase-pill">{formatActivityLabel(user.stats.dominantActivity)}</span>
+								</div>
+
+								<div class="showcase-stage">
+									<svelte:component this={module.default} spec={buildAvatarSpec(user)} />
+								</div>
+
+								<div class="showcase-metrics">
+									<span>総数 {formatNumber(user.stats.totalContributions)}</span>
+									<span>連続 {formatNumber(user.stats.longestStreak)}日</span>
+									<span>主要 {user.personaTitle}</span>
+								</div>
+							</article>
+						{/each}
 					{/await}
-				{/if}
-			</div>
-		</section>
-
-		<section class="detail-grid">
-			<article class="result-card">
-				<p class="eyebrow">特徴</p>
-				<ul class="trait-list">
-					{#each result.traits as trait}
-						<li>{trait}</li>
-					{/each}
-				</ul>
-			</article>
-
-			<article class="result-card">
-				<p class="eyebrow">ビジュアル方針</p>
-				<p class="body-copy">{result.visualDirection}</p>
-				<div class="signal-block">
-					<h3>活動シグナル</h3>
-					<p>{result.contributionSignal}</p>
-				</div>
-			</article>
-
-			<article class="result-card">
-				<p class="eyebrow">活動内訳</p>
-				<div class="activity-list">
-					<div>
-						<span>コミット</span>
-						<strong>{formatNumber(result.stats.commitCount)}</strong>
-					</div>
-					<div>
-						<span>プルリクエスト</span>
-						<strong>{formatNumber(result.stats.pullRequestCount)}</strong>
-					</div>
-					<div>
-						<span>Issue</span>
-						<strong>{formatNumber(result.stats.issueCount)}</strong>
-					</div>
-					<div>
-						<span>レビュー</span>
-						<strong>{formatNumber(result.stats.reviewCount)}</strong>
-					</div>
-					<div>
-						<span>最も動いた曜日</span>
-						<strong>{result.stats.busiestWeekday}</strong>
-					</div>
-				</div>
-			</article>
-		</section>
-
-		<section class="result-card repository-section">
-			<div class="section-header">
-				<div>
-					<p class="eyebrow">主要リポジトリ</p>
-					<h2>主な活動先</h2>
-				</div>
-			</div>
-
-			{#if result.topRepositories.length > 0}
-				<div class="repository-list">
-					{#each result.topRepositories as repository}
-						<a class="repository-card" href={repository.url} target="_blank" rel="noreferrer">
-							<div class="repository-head">
-								<h3>{repository.nameWithOwner}</h3>
-								<span>合計 {formatNumber(repository.total)}</span>
-							</div>
-							<div class="repository-stats">
-								<span>コミット {formatNumber(repository.commits)}</span>
-								<span>PR {formatNumber(repository.pullRequests)}</span>
-								<span>Issue {formatNumber(repository.issues)}</span>
-								<span>レビュー {formatNumber(repository.reviews)}</span>
-							</div>
-						</a>
-					{/each}
 				</div>
 			{:else}
-				<p class="body-copy">リポジトリ単位の活動はまだ取得できていません。</p>
+				<p class="body-copy">まだショーケースに表示できる他ユーザーがいません。先頭で GitHub ログインするとここに参加できます。</p>
 			{/if}
 		</section>
+
+		{#if searchResult}
+			<section class="result-card hero-result">
+				<div class="profile-block">
+					{#if searchResult.profile.avatarUrl}
+						<img class="avatar" src={searchResult.profile.avatarUrl} alt={searchResult.username} />
+					{/if}
+
+					<div class="profile-copy">
+						<p class="eyebrow">Search Result</p>
+						<h2>{searchResult.personaTitle}</h2>
+						<p class="summary">{searchResult.summary}</p>
+
+						<div class="profile-meta">
+							<span>@{searchResult.username}</span>
+							{#if searchResult.profile.name}
+								<span>{searchResult.profile.name}</span>
+							{/if}
+							{#if searchResult.profile.url}
+								<a href={searchResult.profile.url} target="_blank" rel="noreferrer">GitHub Profile</a>
+							{/if}
+						</div>
+					</div>
+				</div>
+
+				<div class="pill-row">
+					<div class="pill">
+						<span>おすすめアセット</span>
+						<strong>{searchResult.recommendedAsset}</strong>
+					</div>
+					<div class="pill">
+						<span>主要アクティビティ</span>
+						<strong>{formatActivityLabel(searchResult.stats.dominantActivity)}</strong>
+					</div>
+					<div class="pill">
+						<span>分析期間</span>
+						<strong>{searchResult.stats.from} - {searchResult.stats.to}</strong>
+					</div>
+				</div>
+			</section>
+		{/if}
+	{:else}
+		<section class="hero mypage-hero">
+			<div class="hero-copy">
+				<p class="eyebrow">My Page</p>
+				<h1>自分の活動ログと<br />アバターを確認する</h1>
+				<p class="lead">
+					ヘッダーから GitHub ログインすると、このページで自分の分析結果と 3D モデルをいつでも確認できます。
+				</p>
+			</div>
+		</section>
+
+		{#if currentUser}
+			<section class="result-card hero-result">
+				<div class="profile-block">
+					{#if currentUser.profile.avatarUrl}
+						<img class="avatar" src={currentUser.profile.avatarUrl} alt={currentUser.username} />
+					{/if}
+
+					<div class="profile-copy">
+						<p class="eyebrow">My Profile</p>
+						<h2>{currentUser.personaTitle}</h2>
+						<p class="summary">{currentUser.summary}</p>
+
+						<div class="profile-meta">
+							<span>@{currentUser.username}</span>
+							{#if currentUser.profile.name}
+								<span>{currentUser.profile.name}</span>
+							{/if}
+							{#if currentUser.profile.url}
+								<a href={currentUser.profile.url} target="_blank" rel="noreferrer">GitHub Profile</a>
+							{/if}
+						</div>
+					</div>
+				</div>
+
+				<div class="pill-row">
+					<div class="pill">
+						<span>おすすめアセット</span>
+						<strong>{currentUser.recommendedAsset}</strong>
+					</div>
+					<div class="pill">
+						<span>主要アクティビティ</span>
+						<strong>{formatActivityLabel(currentUser.stats.dominantActivity)}</strong>
+					</div>
+					<div class="pill">
+						<span>分析期間</span>
+						<strong>{currentUser.stats.from} - {currentUser.stats.to}</strong>
+					</div>
+				</div>
+			</section>
+
+			<section class="stats-grid">
+				{#each getPrimaryStats(currentUser.stats) as stat}
+					<article class="stat-card">
+						<p>{stat.label}</p>
+						<h3>{stat.value}</h3>
+					</article>
+				{/each}
+			</section>
+
+			<section class="result-card model-section">
+				<div class="model-copy">
+					<p class="eyebrow">コード生成3Dモデル</p>
+					<h2>自分の活動から組み上がるアバター</h2>
+					<p class="body-copy">
+						活動量・streak・主要活動・主要リポジトリ数から、あなたのアバター形状と色をコードで組み立てています。
+					</p>
+
+					<div class="model-parameters">
+						{#each getAvatarParameters(buildAvatarSpec(currentUser), { ...currentUser.stats, topRepositoryCount: currentUser.topRepositories.length }) as parameter}
+							<div class="model-parameter-card">
+								<div class="model-parameter-head">
+									<strong>{parameter.part}</strong>
+									<span>{parameter.value}</span>
+								</div>
+								<p>{parameter.meaning}</p>
+								<small>{parameter.source}</small>
+							</div>
+						{/each}
+					</div>
+				</div>
+
+				<div class="model-stage">
+					{#await avatarPreviewModulePromise}
+						<div class="model-loading">3Dプレビューを準備しています...</div>
+					{:then module}
+						<svelte:component this={module.default} spec={buildAvatarSpec(currentUser)} />
+					{/await}
+				</div>
+			</section>
+
+			<section class="detail-grid">
+				<article class="result-card">
+					<p class="eyebrow">特徴</p>
+					<ul class="trait-list">
+						{#each currentUser.traits as trait}
+							<li>{trait}</li>
+						{/each}
+					</ul>
+				</article>
+
+				<article class="result-card">
+					<p class="eyebrow">ビジュアル方針</p>
+					<p class="body-copy">{currentUser.visualDirection}</p>
+					<div class="signal-block">
+						<h3>活動シグナル</h3>
+						<p>{currentUser.contributionSignal}</p>
+					</div>
+				</article>
+
+				<article class="result-card">
+					<p class="eyebrow">活動内訳</p>
+					<div class="activity-list">
+						<div>
+							<span>コミット</span>
+							<strong>{formatNumber(currentUser.stats.commitCount)}</strong>
+						</div>
+						<div>
+							<span>プルリクエスト</span>
+							<strong>{formatNumber(currentUser.stats.pullRequestCount)}</strong>
+						</div>
+						<div>
+							<span>Issue</span>
+							<strong>{formatNumber(currentUser.stats.issueCount)}</strong>
+						</div>
+						<div>
+							<span>レビュー</span>
+							<strong>{formatNumber(currentUser.stats.reviewCount)}</strong>
+						</div>
+						<div>
+							<span>最も動いた曜日</span>
+							<strong>{currentUser.stats.busiestWeekday}</strong>
+						</div>
+					</div>
+				</article>
+			</section>
+
+			<section class="result-card repository-section">
+				<div class="section-header">
+					<div>
+						<p class="eyebrow">主要リポジトリ</p>
+						<h2>主な活動先</h2>
+					</div>
+				</div>
+
+				{#if currentUser.topRepositories.length > 0}
+					<div class="repository-list">
+						{#each currentUser.topRepositories as repository}
+							<a class="repository-card" href={repository.url} target="_blank" rel="noreferrer">
+								<div class="repository-head">
+									<h3>{repository.nameWithOwner}</h3>
+									<span>合計 {formatNumber(repository.total)}</span>
+								</div>
+								<div class="repository-stats">
+									<span>コミット {formatNumber(repository.commits)}</span>
+									<span>PR {formatNumber(repository.pullRequests)}</span>
+									<span>Issue {formatNumber(repository.issues)}</span>
+									<span>レビュー {formatNumber(repository.reviews)}</span>
+								</div>
+							</a>
+						{/each}
+					</div>
+				{:else}
+					<p class="body-copy">リポジトリ単位の活動はまだ取得できていません。</p>
+				{/if}
+			</section>
+		{:else}
+			<section class="panel empty-panel">
+				<p class="eyebrow">Login Required</p>
+				<h2>まだログインしていません</h2>
+				<p class="body-copy">
+					ヘッダーの GitHub ログインからサインインすると、自分の活動分析とアバターをこのページで確認できます。
+				</p>
+				<button class="oauth-button" on:click={loginWithGitHub} disabled={authLoading || !oauthAvailable}>
+					{authLoading ? 'GitHubへ移動中...' : 'GitHubでログイン'}
+				</button>
+			</section>
+		{/if}
 	{/if}
 </main>

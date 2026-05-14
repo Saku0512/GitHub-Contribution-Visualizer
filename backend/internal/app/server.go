@@ -23,6 +23,7 @@ type Server struct {
 	mux                   *http.ServeMux
 	analyzer              analyzer
 	oauth                 oauthClient
+	store                 *sessionStore
 	gitHubTokenConfigured bool
 	gitHubOAuthConfigured bool
 }
@@ -48,6 +49,7 @@ func NewServer() *http.Server {
 		mux:                   http.NewServeMux(),
 		analyzer:              analysis.NewService(githubClient, time.Now),
 		oauth:                 githubClient,
+		store:                 newSessionStore(),
 		gitHubTokenConfigured: githubClient.HasToken(),
 		gitHubOAuthConfigured: githubClient.HasOAuthCredentials(),
 	}
@@ -68,6 +70,9 @@ func (s *Server) routes() {
 	s.mux.HandleFunc("/api/v1/analyze", s.handleAnalyze)
 	s.mux.HandleFunc("/api/v1/auth/github/login", s.handleGitHubLogin)
 	s.mux.HandleFunc("/api/v1/auth/github/callback", s.handleGitHubCallback)
+	s.mux.HandleFunc("/api/v1/me", s.handleMe)
+	s.mux.HandleFunc("/api/v1/showcase", s.handleShowcase)
+	s.mux.HandleFunc("/api/v1/logout", s.handleLogout)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -118,6 +123,75 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleMe(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	login, ok := s.currentLogin(r)
+	if !ok {
+		writeJSON(w, http.StatusUnauthorized, map[string]string{
+			"error": "not logged in",
+		})
+		return
+	}
+
+	result, ok := s.store.GetProfile(login)
+	if !ok {
+		ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+		defer cancel()
+
+		var err error
+		result, err = s.analyzer.AnalyzeUser(ctx, login)
+		if err != nil {
+			log.Printf("load current user analysis failed for %q: %v", login, err)
+			s.writeAnalyzeError(w, err)
+			return
+		}
+
+		s.store.SaveProfile(result)
+	}
+
+	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleShowcase(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	writeJSON(w, http.StatusOK, map[string]any{
+		"users": s.store.Showcase(12),
+	})
+}
+
+func (s *Server) handleLogout(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodPost {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	if sessionID, ok := sessionIDFromRequest(r); ok {
+		s.store.DeleteSession(sessionID)
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "github_session",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+		MaxAge:   -1,
+	})
+
+	writeJSON(w, http.StatusOK, map[string]string{
+		"status": "logged out",
+	})
 }
 
 func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
@@ -205,6 +279,23 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 
+	result, err := s.analyzer.AnalyzeUser(ctx, user.Login)
+	if err != nil {
+		log.Printf("github oauth analyze failed for %q: %v", user.Login, err)
+		http.Redirect(w, r, baseURL+"/?auth_error="+url.QueryEscape(publicUpstreamError(err)), http.StatusTemporaryRedirect)
+		return
+	}
+
+	sessionID, err := generateOAuthState()
+	if err != nil {
+		log.Printf("failed to generate session id: %v", err)
+		http.Redirect(w, r, baseURL+"/?auth_error="+url.QueryEscape("failed to create user session"), http.StatusTemporaryRedirect)
+		return
+	}
+
+	s.store.SaveSession(sessionID, user.Login)
+	s.store.SaveProfile(result)
+
 	http.SetCookie(w, &http.Cookie{
 		Name:     "github_oauth_state",
 		Value:    "",
@@ -215,7 +306,17 @@ func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
 		MaxAge:   -1,
 	})
 
-	http.Redirect(w, r, baseURL+"/?github_login="+url.QueryEscape(user.Login), http.StatusTemporaryRedirect)
+	http.SetCookie(w, &http.Cookie{
+		Name:     "github_session",
+		Value:    sessionID,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+		MaxAge:   60 * 60 * 24 * 14,
+	})
+
+	http.Redirect(w, r, baseURL+"/my-page", http.StatusTemporaryRedirect)
 }
 
 func (s *Server) writeAnalyzeError(w http.ResponseWriter, err error) {
@@ -325,6 +426,28 @@ func validOAuthState(r *http.Request) bool {
 	}
 
 	return stateCookie.Value == queryState
+}
+
+func sessionIDFromRequest(r *http.Request) (string, bool) {
+	sessionCookie, err := r.Cookie("github_session")
+	if err != nil {
+		return "", false
+	}
+
+	if strings.TrimSpace(sessionCookie.Value) == "" {
+		return "", false
+	}
+
+	return sessionCookie.Value, true
+}
+
+func (s *Server) currentLogin(r *http.Request) (string, bool) {
+	sessionID, ok := sessionIDFromRequest(r)
+	if !ok {
+		return "", false
+	}
+
+	return s.store.GetLogin(sessionID)
 }
 
 func withLogging(next http.Handler) http.Handler {

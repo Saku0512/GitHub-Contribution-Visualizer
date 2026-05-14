@@ -59,6 +59,7 @@ func TestHandleAnalyzeReturnsServiceResult(t *testing.T) {
 		mux:                   http.NewServeMux(),
 		analyzer:              stubAnalyzer{result: analysis.Result{Username: "octocat", PersonaTitle: "Momentum Builder"}},
 		oauth:                 stubOAuthClient{},
+		store:                 newSessionStore(),
 		gitHubTokenConfigured: true,
 		gitHubOAuthConfigured: true,
 	}
@@ -103,6 +104,7 @@ func TestHandleAnalyzeMapsKnownErrors(t *testing.T) {
 				mux:                   http.NewServeMux(),
 				analyzer:              stubAnalyzer{err: tt.err},
 				oauth:                 stubOAuthClient{},
+				store:                 newSessionStore(),
 				gitHubTokenConfigured: tt.err != analysis.ErrGitHubTokenMissing,
 				gitHubOAuthConfigured: true,
 			}
@@ -134,6 +136,7 @@ func TestHandleHealthIncludesGitHubConfigState(t *testing.T) {
 		mux:                   http.NewServeMux(),
 		analyzer:              stubAnalyzer{},
 		oauth:                 stubOAuthClient{},
+		store:                 newSessionStore(),
 		gitHubTokenConfigured: true,
 		gitHubOAuthConfigured: true,
 	}
@@ -167,6 +170,7 @@ func TestHandleGitHubLoginRedirectsToGitHub(t *testing.T) {
 		mux:                   http.NewServeMux(),
 		analyzer:              stubAnalyzer{},
 		oauth:                 stubOAuthClient{},
+		store:                 newSessionStore(),
 		gitHubTokenConfigured: true,
 		gitHubOAuthConfigured: true,
 	}
@@ -194,11 +198,14 @@ func TestHandleGitHubLoginRedirectsToGitHub(t *testing.T) {
 
 func TestHandleGitHubCallbackRedirectsBackWithLogin(t *testing.T) {
 	server := &Server{
-		mux:      http.NewServeMux(),
-		analyzer: stubAnalyzer{},
+		mux: http.NewServeMux(),
+		analyzer: stubAnalyzer{
+			result: analysis.Result{Username: "octocat", PersonaTitle: "Momentum Builder"},
+		},
 		oauth: stubOAuthClient{authorized: githubapi.AuthenticatedUser{
 			Login: "octocat",
 		}},
+		store:                 newSessionStore(),
 		gitHubTokenConfigured: true,
 		gitHubOAuthConfigured: true,
 	}
@@ -217,7 +224,98 @@ func TestHandleGitHubCallbackRedirectsBackWithLogin(t *testing.T) {
 		t.Fatalf("expected 307, got %d", rec.Code)
 	}
 
-	if got := rec.Header().Get("Location"); got != "https://example.com/?github_login=octocat" {
+	if got := rec.Header().Get("Location"); got != "https://example.com/my-page" {
 		t.Fatalf("unexpected redirect target: %q", got)
+	}
+
+	foundSessionCookie := false
+	for _, cookie := range rec.Result().Cookies() {
+		if cookie.Name == "github_session" && cookie.Value != "" {
+			foundSessionCookie = true
+		}
+	}
+
+	if !foundSessionCookie {
+		t.Fatal("expected github_session cookie to be set")
+	}
+}
+
+func TestHandleMeReturnsCurrentUserResult(t *testing.T) {
+	store := newSessionStore()
+	store.SaveSession("session-123", "octocat")
+	store.SaveProfile(analysis.Result{Username: "octocat", PersonaTitle: "Momentum Builder"})
+
+	server := &Server{
+		mux:                   http.NewServeMux(),
+		analyzer:              stubAnalyzer{},
+		oauth:                 stubOAuthClient{},
+		store:                 store,
+		gitHubTokenConfigured: true,
+		gitHubOAuthConfigured: true,
+	}
+	server.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/me", nil)
+	req.AddCookie(&http.Cookie{Name: "github_session", Value: "session-123"})
+	rec := httptest.NewRecorder()
+
+	server.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestHandleShowcaseReturnsLoggedInUsers(t *testing.T) {
+	store := newSessionStore()
+	store.SaveSession("session-123", "octocat")
+	store.SaveProfile(analysis.Result{Username: "octocat", PersonaTitle: "Momentum Builder"})
+
+	server := &Server{
+		mux:                   http.NewServeMux(),
+		analyzer:              stubAnalyzer{},
+		oauth:                 stubOAuthClient{},
+		store:                 store,
+		gitHubTokenConfigured: true,
+		gitHubOAuthConfigured: true,
+	}
+	server.routes()
+
+	req := httptest.NewRequest(http.MethodGet, "/api/v1/showcase", nil)
+	rec := httptest.NewRecorder()
+
+	server.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+}
+
+func TestHandleLogoutClearsSession(t *testing.T) {
+	store := newSessionStore()
+	store.SaveSession("session-123", "octocat")
+
+	server := &Server{
+		mux:                   http.NewServeMux(),
+		analyzer:              stubAnalyzer{},
+		oauth:                 stubOAuthClient{},
+		store:                 store,
+		gitHubTokenConfigured: true,
+		gitHubOAuthConfigured: true,
+	}
+	server.routes()
+
+	req := httptest.NewRequest(http.MethodPost, "/api/v1/logout", nil)
+	req.AddCookie(&http.Cookie{Name: "github_session", Value: "session-123"})
+	rec := httptest.NewRecorder()
+
+	server.mux.ServeHTTP(rec, req)
+
+	if rec.Code != http.StatusOK {
+		t.Fatalf("expected 200, got %d", rec.Code)
+	}
+
+	if _, ok := store.GetLogin("session-123"); ok {
+		t.Fatal("expected session to be removed")
 	}
 }
