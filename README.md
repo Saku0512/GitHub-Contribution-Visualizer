@@ -53,6 +53,7 @@ docker compose up --build
 デフォルトでは `http://localhost:8088` にアクセスしてください。
 `80` 番を使いたい場合は、ルートに `.env` を置いて `TRAEFIK_PORT=80` を指定できます。
 実データ分析を使うには `.env` に `GITHUB_TOKEN=...` を設定してください。
+GitHub ログインも使う場合は `GITHUB_OAUTH_CLIENT_ID` と `GITHUB_OAUTH_CLIENT_SECRET` も設定してください。
 
 `frontend` は `Vite dev server` として起動するので、`frontend/src` 以下を保存するとホットリロードされます。
 依存を追加した場合も、`frontend` 起動時にコンテナ内で `npm install` が走るため、そのまま反映されます。
@@ -69,6 +70,7 @@ docker compose down
 ## Current Prototype Scope
 
 - GitHub ユーザー名を入力する
+- GitHub でログインして自分のユーザー名を自動入力する
 - Go API に送信する
 - GitHub GraphQL API から過去1年の活動データを取得する
 - 活動量・streak・週末比率・主要リポジトリを集計する

@@ -1,4 +1,6 @@
 <script>
+	import { onMount } from 'svelte';
+
 	const apiBaseUrl = import.meta.env.VITE_API_BASE_URL ?? '';
 
 	const statLabels = {
@@ -12,6 +14,8 @@
 
 	let username = '';
 	let loading = false;
+	let authLoading = false;
+	let oauthAvailable = true;
 	let error = '';
 	let result = null;
 	let avatarSpec = null;
@@ -20,11 +24,53 @@
 	$: avatarSpec = result ? buildAvatarSpec(result) : null;
 	$: avatarPreviewModulePromise = result ? import('./lib/AvatarPreview.svelte') : null;
 
+	onMount(() => {
+		void loadHealth();
+
+		const currentURL = new URL(window.location.href);
+		const githubLogin = currentURL.searchParams.get('github_login');
+		const authError = currentURL.searchParams.get('auth_error');
+
+		if (githubLogin) {
+			username = githubLogin;
+			void analyzeForUsername(githubLogin);
+		}
+
+		if (authError) {
+			error = authError;
+		}
+
+		if (githubLogin || authError) {
+			currentURL.searchParams.delete('github_login');
+			currentURL.searchParams.delete('auth_error');
+			window.history.replaceState({}, '', currentURL);
+		}
+	});
+
+	async function loadHealth() {
+		try {
+			const response = await fetch(`${apiBaseUrl}/api/health`);
+			if (!response.ok) {
+				return;
+			}
+
+			const data = await response.json();
+			oauthAvailable = data.githubOAuthConfigured !== false;
+		} catch {
+			oauthAvailable = true;
+		}
+	}
+
 	async function analyze() {
+		return analyzeForUsername(username);
+	}
+
+	async function analyzeForUsername(value) {
 		error = '';
 		result = null;
 
-		if (!username.trim()) {
+		const normalized = value.trim();
+		if (!normalized) {
 			error = 'GitHubユーザー名を入力してください。';
 			return;
 		}
@@ -37,7 +83,7 @@
 				headers: {
 					'Content-Type': 'application/json'
 				},
-				body: JSON.stringify({ username: username.trim() })
+				body: JSON.stringify({ username: normalized })
 			});
 
 			const data = await response.json();
@@ -52,6 +98,16 @@
 		} finally {
 			loading = false;
 		}
+	}
+
+	function loginWithGitHub() {
+		if (!oauthAvailable) {
+			error = 'GitHubログインはまだ設定されていません。ユーザー名検索はそのまま使えます。';
+			return;
+		}
+
+		authLoading = true;
+		window.location.href = `${apiBaseUrl}/api/v1/auth/github/login`;
 	}
 
 	function formatPercent(value) {
@@ -245,6 +301,20 @@
 				<p class="eyebrow">分析入力</p>
 				<h2>GitHubユーザー名</h2>
 			</div>
+			<p class="form-note">
+				ユーザー名で直接検索するか、GitHub でログインして自分のアカウントをすぐ分析できます。
+			</p>
+		</div>
+
+		<div class="oauth-row">
+			<button class="oauth-button" on:click={loginWithGitHub} disabled={loading || authLoading || !oauthAvailable}>
+				{#if authLoading}
+					GitHubへ移動中...
+				{:else}
+					GitHubでログインして分析
+				{/if}
+			</button>
+			<p class="oauth-note">ログイン後は GitHub のユーザー名を自動入力して、そのまま分析を開始します。</p>
 		</div>
 
 		<div class="input-row">
@@ -254,9 +324,9 @@
 				type="text"
 				placeholder="octocat"
 				autocomplete="off"
-				on:keydown={(event) => event.key === 'Enter' && analyze()}
+				on:keydown={(event) => event.key === 'Enter' && analyzeForUsername(username)}
 			/>
-			<button on:click={analyze} disabled={loading}>
+			<button on:click={() => analyzeForUsername(username)} disabled={loading || authLoading}>
 				{#if loading}
 					分析中...
 				{:else}

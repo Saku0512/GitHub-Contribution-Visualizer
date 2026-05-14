@@ -184,6 +184,30 @@ h3 {
 	gap: 14px;
 }
 
+.oauth-row {
+	display: grid;
+	grid-template-columns: minmax(260px, 320px) minmax(0, 1fr);
+	gap: 16px;
+	align-items: center;
+	margin-bottom: 18px;
+	padding: 18px;
+	border-radius: 22px;
+	background: rgba(255, 255, 255, 0.54);
+	border: 1px solid rgba(31, 26, 21, 0.08);
+}
+
+.oauth-button {
+	background: linear-gradient(135deg, #181717, #2d2a28);
+	box-shadow: 0 16px 34px rgba(24, 23, 23, 0.22);
+}
+
+.oauth-note {
+	margin: 0;
+	font-size: 0.94rem;
+	color: var(--muted);
+	line-height: 1.7;
+}
+
 input {
 	width: 100%;
 	padding: 16px 18px;
@@ -550,6 +574,7 @@ button:disabled {
 	}
 
 	.form-header,
+	.oauth-row,
 	.input-row,
 	.profile-block,
 	.stats-grid {

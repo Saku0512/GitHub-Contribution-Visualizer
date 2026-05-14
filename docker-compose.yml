@@ -20,6 +20,8 @@ services:
       PORT: 8080
       GITHUB_TOKEN: ${GITHUB_TOKEN:-}
       GITHUB_GRAPHQL_URL: ${GITHUB_GRAPHQL_URL:-}
+      GITHUB_OAUTH_CLIENT_ID: ${GITHUB_OAUTH_CLIENT_ID:-}
+      GITHUB_OAUTH_CLIENT_SECRET: ${GITHUB_OAUTH_CLIENT_SECRET:-}
     labels:
       - traefik.enable=true
       - traefik.http.routers.backend.rule=PathPrefix(`/api`)

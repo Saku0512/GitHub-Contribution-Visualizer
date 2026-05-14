@@ -2,11 +2,14 @@ package app
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
 	"log"
 	"net/http"
+	"net/url"
 	"os"
 	"strings"
 	"time"
@@ -19,11 +22,19 @@ type Server struct {
 	Addr                  string
 	mux                   *http.ServeMux
 	analyzer              analyzer
+	oauth                 oauthClient
 	gitHubTokenConfigured bool
+	gitHubOAuthConfigured bool
 }
 
 type analyzer interface {
 	AnalyzeUser(ctx context.Context, username string) (analysis.Result, error)
+}
+
+type oauthClient interface {
+	HasOAuthCredentials() bool
+	BuildAuthorizationURL(state string, redirectURI string) (string, error)
+	ExchangeCodeForUser(ctx context.Context, code string, redirectURI string) (githubapi.AuthenticatedUser, error)
 }
 
 func NewServer() *http.Server {
@@ -36,7 +47,9 @@ func NewServer() *http.Server {
 		Addr:                  envOrDefault("PORT", "8080"),
 		mux:                   http.NewServeMux(),
 		analyzer:              analysis.NewService(githubClient, time.Now),
+		oauth:                 githubClient,
 		gitHubTokenConfigured: githubClient.HasToken(),
+		gitHubOAuthConfigured: githubClient.HasOAuthCredentials(),
 	}
 
 	server.routes()
@@ -53,6 +66,8 @@ func NewServer() *http.Server {
 func (s *Server) routes() {
 	s.mux.HandleFunc("/api/health", s.handleHealth)
 	s.mux.HandleFunc("/api/v1/analyze", s.handleAnalyze)
+	s.mux.HandleFunc("/api/v1/auth/github/login", s.handleGitHubLogin)
+	s.mux.HandleFunc("/api/v1/auth/github/callback", s.handleGitHubCallback)
 }
 
 func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
@@ -64,6 +79,7 @@ func (s *Server) handleHealth(w http.ResponseWriter, r *http.Request) {
 	writeJSON(w, http.StatusOK, map[string]any{
 		"status":                "ok",
 		"githubTokenConfigured": s.gitHubTokenConfigured,
+		"githubOAuthConfigured": s.gitHubOAuthConfigured,
 	})
 }
 
@@ -102,6 +118,104 @@ func (s *Server) handleAnalyze(w http.ResponseWriter, r *http.Request) {
 	}
 
 	writeJSON(w, http.StatusOK, result)
+}
+
+func (s *Server) handleGitHubLogin(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	if !s.gitHubOAuthConfigured {
+		writeJSON(w, http.StatusServiceUnavailable, map[string]string{
+			"error": "GitHub OAuth is not configured",
+		})
+		return
+	}
+
+	state, err := generateOAuthState()
+	if err != nil {
+		log.Printf("failed to generate oauth state: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to start GitHub login",
+		})
+		return
+	}
+
+	redirectURI := requestBaseURL(r) + "/api/v1/auth/github/callback"
+	loginURL, err := s.oauth.BuildAuthorizationURL(state, redirectURI)
+	if err != nil {
+		log.Printf("failed to build github oauth url: %v", err)
+		writeJSON(w, http.StatusInternalServerError, map[string]string{
+			"error": "failed to start GitHub login",
+		})
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "github_oauth_state",
+		Value:    state,
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+		MaxAge:   600,
+	})
+
+	http.Redirect(w, r, loginURL, http.StatusTemporaryRedirect)
+}
+
+func (s *Server) handleGitHubCallback(w http.ResponseWriter, r *http.Request) {
+	if r.Method != http.MethodGet {
+		writeMethodNotAllowed(w)
+		return
+	}
+
+	baseURL := requestBaseURL(r)
+
+	if authError := r.URL.Query().Get("error"); authError != "" {
+		http.Redirect(w, r, baseURL+"/?auth_error="+url.QueryEscape(authError), http.StatusTemporaryRedirect)
+		return
+	}
+
+	if !s.gitHubOAuthConfigured {
+		http.Redirect(w, r, baseURL+"/?auth_error="+url.QueryEscape("GitHub OAuth is not configured"), http.StatusTemporaryRedirect)
+		return
+	}
+
+	if !validOAuthState(r) {
+		http.Redirect(w, r, baseURL+"/?auth_error="+url.QueryEscape("GitHub login state mismatch"), http.StatusTemporaryRedirect)
+		return
+	}
+
+	code := strings.TrimSpace(r.URL.Query().Get("code"))
+	if code == "" {
+		http.Redirect(w, r, baseURL+"/?auth_error="+url.QueryEscape("GitHub did not return an authorization code"), http.StatusTemporaryRedirect)
+		return
+	}
+
+	redirectURI := baseURL + "/api/v1/auth/github/callback"
+	ctx, cancel := context.WithTimeout(r.Context(), 20*time.Second)
+	defer cancel()
+
+	user, err := s.oauth.ExchangeCodeForUser(ctx, code, redirectURI)
+	if err != nil {
+		log.Printf("github oauth callback failed: %v", err)
+		http.Redirect(w, r, baseURL+"/?auth_error="+url.QueryEscape(publicUpstreamError(err)), http.StatusTemporaryRedirect)
+		return
+	}
+
+	http.SetCookie(w, &http.Cookie{
+		Name:     "github_oauth_state",
+		Value:    "",
+		Path:     "/",
+		HttpOnly: true,
+		SameSite: http.SameSiteLaxMode,
+		Secure:   requestIsHTTPS(r),
+		MaxAge:   -1,
+	})
+
+	http.Redirect(w, r, baseURL+"/?github_login="+url.QueryEscape(user.Login), http.StatusTemporaryRedirect)
 }
 
 func (s *Server) writeAnalyzeError(w http.ResponseWriter, err error) {
@@ -170,6 +284,47 @@ func withCORS(next http.Handler) http.Handler {
 
 		next.ServeHTTP(w, r)
 	})
+}
+
+func requestBaseURL(r *http.Request) string {
+	scheme := "http"
+	if requestIsHTTPS(r) {
+		scheme = "https"
+	}
+
+	return scheme + "://" + r.Host
+}
+
+func requestIsHTTPS(r *http.Request) bool {
+	if r.TLS != nil {
+		return true
+	}
+
+	forwardedProto := strings.TrimSpace(strings.Split(r.Header.Get("X-Forwarded-Proto"), ",")[0])
+	return strings.EqualFold(forwardedProto, "https")
+}
+
+func generateOAuthState() (string, error) {
+	randomBytes := make([]byte, 32)
+	if _, err := rand.Read(randomBytes); err != nil {
+		return "", err
+	}
+
+	return base64.RawURLEncoding.EncodeToString(randomBytes), nil
+}
+
+func validOAuthState(r *http.Request) bool {
+	queryState := strings.TrimSpace(r.URL.Query().Get("state"))
+	if queryState == "" {
+		return false
+	}
+
+	stateCookie, err := r.Cookie("github_oauth_state")
+	if err != nil {
+		return false
+	}
+
+	return stateCookie.Value == queryState
 }
 
 func withLogging(next http.Handler) http.Handler {

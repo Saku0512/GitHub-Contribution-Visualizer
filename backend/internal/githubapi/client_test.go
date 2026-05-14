@@ -6,6 +6,7 @@ import (
 	"errors"
 	"net/http"
 	"net/http/httptest"
+	"strings"
 	"testing"
 	"time"
 
@@ -109,6 +110,66 @@ func TestFetchUserActivityWithoutToken(t *testing.T) {
 
 	if !errors.Is(err, analysis.ErrGitHubTokenMissing) {
 		t.Fatalf("expected ErrGitHubTokenMissing, got %v", err)
+	}
+}
+
+func TestBuildAuthorizationURL(t *testing.T) {
+	t.Setenv("GITHUB_OAUTH_CLIENT_ID", "client-id")
+	t.Setenv("GITHUB_OAUTH_CLIENT_SECRET", "client-secret")
+
+	client := NewClient("token", "")
+	loginURL, err := client.BuildAuthorizationURL("state-123", "https://example.com/api/v1/auth/github/callback")
+	if err != nil {
+		t.Fatalf("BuildAuthorizationURL returned error: %v", err)
+	}
+
+	if !strings.Contains(loginURL, "client_id=client-id") {
+		t.Fatalf("expected client_id in login url, got %q", loginURL)
+	}
+
+	if !strings.Contains(loginURL, "state=state-123") {
+		t.Fatalf("expected state in login url, got %q", loginURL)
+	}
+}
+
+func TestExchangeCodeForUser(t *testing.T) {
+	originalAuthorizeEndpoint := defaultOAuthAuthorizeEndpoint
+	originalTokenEndpoint := defaultOAuthTokenEndpoint
+	originalRESTEndpoint := defaultRESTEndpoint
+	defer func() {
+		defaultOAuthAuthorizeEndpoint = originalAuthorizeEndpoint
+		defaultOAuthTokenEndpoint = originalTokenEndpoint
+		defaultRESTEndpoint = originalRESTEndpoint
+	}()
+
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		switch r.URL.Path {
+		case "/login/oauth/access_token":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"access_token":"oauth-token"}`))
+		case "/user":
+			w.Header().Set("Content-Type", "application/json")
+			_, _ = w.Write([]byte(`{"login":"octocat","name":"The Octocat","html_url":"https://github.com/octocat","avatar_url":"https://github.com/images/error/octocat_happy.gif"}`))
+		default:
+			http.NotFound(w, r)
+		}
+	}))
+	defer server.Close()
+
+	defaultOAuthTokenEndpoint = server.URL + "/login/oauth/access_token"
+	defaultRESTEndpoint = server.URL + "/user"
+
+	t.Setenv("GITHUB_OAUTH_CLIENT_ID", "client-id")
+	t.Setenv("GITHUB_OAUTH_CLIENT_SECRET", "client-secret")
+
+	client := NewClient("token", "")
+	user, err := client.ExchangeCodeForUser(context.Background(), "test-code", "https://example.com/api/v1/auth/github/callback")
+	if err != nil {
+		t.Fatalf("ExchangeCodeForUser returned error: %v", err)
+	}
+
+	if user.Login != "octocat" {
+		t.Fatalf("expected login octocat, got %q", user.Login)
 	}
 }
 
