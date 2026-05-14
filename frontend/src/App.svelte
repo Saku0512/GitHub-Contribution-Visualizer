@@ -351,7 +351,7 @@
 </script>
 
 <svelte:head>
-	<title>GitHub Contribution Visualizer</title>
+	<title>Commit Visualizer</title>
 	<meta
 		name="description"
 		content="GitHubの草をもとに、ログイン中ユーザーの3Dモデルと自分の活動傾向を可視化する"
@@ -363,7 +363,7 @@
 		<button class="brand" on:click={() => navigateTo('/')}>
 			<span class="brand-mark"></span>
 			<span>
-				<strong>Contribution Radar</strong>
+				<strong>Commit Visualizer</strong>
 				<small>GitHub activity avatars</small>
 			</span>
 		</button>
